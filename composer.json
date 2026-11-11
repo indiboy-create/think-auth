@@ -1,0 +1,40 @@
+{
+    "name": "youvision/think-auth",
+    "description": "Role based access control (RBAC) authentication package for ThinkPHP 8.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "keywords": [
+        "thinkphp",
+        "auth",
+        "rbac",
+        "permission",
+        "access-control"
+    ],
+    "require": {
+        "php": "^8.0",
+        "topthink/framework": "^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "youvision\\auth\\": "src/"
+        },
+        "files": [
+            "src/helper.php"
+        ]
+    },
+    "extra": {
+        "think": {
+            "services": [
+                "youvision\\auth\\Service"
+            ],
+            "config": {
+                "auth": "src/config.php"
+            }
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
