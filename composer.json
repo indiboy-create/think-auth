@@ -35,6 +35,9 @@
     "config": {
         "sort-packages": true
     },
+    "scripts": {
+        "test": "@php tests/verify.php"
+    },
     "minimum-stability": "stable",
     "prefer-stable": true
 }

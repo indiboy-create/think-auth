@@ -13,4 +13,20 @@ return [
     // 用户表名（不含数据库前缀），用于读取用户字段并解析规则 condition 中的 {字段名}
     // 例如用户表为 think_member 时，此处填写 member
     'auth_user' => 'member',
+
+    // 认证中间件配置
+    'middleware' => [
+        // 无需认证的规则白名单，支持完整匹配与前缀通配，例如 user/login、user/*
+        'allow' => [],
+
+        // 用户 ID 来源：字符串为 Session 键名；闭包为 fn(Request $request): int
+        // 不从请求参数读取用户 ID，避免客户端伪造
+        'user_id' => 'uid',
+
+        // 规则名生成闭包 fn(Request $request): string，留空使用 {控制器}/{方法}
+        'rule' => null,
+
+        // 未授权响应闭包 fn(Request $request): Response，留空返回 403 文本
+        'deny' => null,
+    ],
 ];

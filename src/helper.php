@@ -42,7 +42,7 @@ if (!function_exists('get_auth_role_ids')) {
      */
     function get_auth_role_ids(int $uid): array
     {
-        return (array) \youvision\auth\Auth::roles($uid, 'role_id');
+        return array_map('intval', (array) \youvision\auth\Auth::roles($uid, 'id'));
     }
 }
 
@@ -56,5 +56,51 @@ if (!function_exists('get_auth_roles')) {
     function get_auth_roles(int $uid)
     {
         return \youvision\auth\Auth::roles($uid);
+    }
+}
+
+if (!function_exists('auth_has_role')) {
+    /**
+     * 判断是否拥有指定角色（ID 或角色名）
+     *
+     * @param int|string $role
+     */
+    function auth_has_role(int $uid, $role): bool
+    {
+        return \youvision\auth\Auth::hasRole($uid, $role);
+    }
+}
+
+if (!function_exists('auth_has_any_role')) {
+    /**
+     * 判断是否拥有角色列表中的任意一个
+     *
+     * @param array<int, int|string> $roles
+     */
+    function auth_has_any_role(int $uid, array $roles): bool
+    {
+        return \youvision\auth\Auth::hasAnyRole($uid, $roles);
+    }
+}
+
+if (!function_exists('auth_has_all_roles')) {
+    /**
+     * 判断是否同时拥有角色列表中的全部角色
+     *
+     * @param array<int, int|string> $roles
+     */
+    function auth_has_all_roles(int $uid, array $roles): bool
+    {
+        return \youvision\auth\Auth::hasAllRoles($uid, $roles);
+    }
+}
+
+if (!function_exists('auth_clear_cache')) {
+    /**
+     * 清理指定用户 auth_type=2 的 Session 规则缓存
+     */
+    function auth_clear_cache(int $uid, int $type = 1): void
+    {
+        \youvision\auth\Auth::clearCache($uid, $type);
     }
 }

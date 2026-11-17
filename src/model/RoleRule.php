@@ -14,7 +14,7 @@ class RoleRule extends Model
 {
     protected $name = 'auth_role_rule';
 
-    protected $pk = 'role_id';
+    protected $pk = 'rule_id';
 
     public function getName(): string
     {
@@ -23,7 +23,7 @@ class RoleRule extends Model
 
     public function getPk(): string
     {
-        return 'role_id';
+        return 'rule_id';
     }
 
     /**

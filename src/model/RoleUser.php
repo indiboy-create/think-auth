@@ -15,7 +15,7 @@ class RoleUser extends Model
 {
     protected $name = 'auth_role_user';
 
-    protected $pk = 'role_id';
+    protected $pk = 'user_id';
 
     public function getName(): string
     {
@@ -24,7 +24,7 @@ class RoleUser extends Model
 
     public function getPk(): string
     {
-        return 'role_id';
+        return 'user_id';
     }
 
     /**

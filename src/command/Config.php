@@ -27,6 +27,7 @@ class Config extends Command
 
         if (is_file($target) && !$input->getOption('force')) {
             $output->writeln('<info>Config file already exists: ' . $target . '</info>');
+
             return 0;
         }
 
@@ -34,10 +35,12 @@ class Config extends Command
 
         if ($content === false || file_put_contents($target, $content) === false) {
             $output->writeln('<error>Unable to write config file: ' . $target . '</error>');
+
             return 1;
         }
 
         $output->writeln('<info>Config file created: ' . $target . '</info>');
+
         return 0;
     }
 }

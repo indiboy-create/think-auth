@@ -6,6 +6,7 @@ namespace youvision\auth\service;
 
 use think\App;
 use think\facade\Session;
+use youvision\auth\model\Role;
 use youvision\auth\model\RoleRule;
 use youvision\auth\model\RoleUser;
 use youvision\auth\model\User;
@@ -30,6 +31,20 @@ class Auth
      * @var array<string, array>
      */
     protected array $authListCache = [];
+
+    /**
+     * 当前请求内的规则索引缓存，键为 uid:type
+     *
+     * @var array<string, array<string, array<int, array<string, mixed>>>>
+     */
+    protected array $authIndexCache = [];
+
+    /**
+     * 当前请求内的角色缓存，键为 uid
+     *
+     * @var array<int, array{ids: array<int, int>, identities: array<int, int|string>}>
+     */
+    protected array $roleCache = [];
 
     public function __construct(App $app)
     {
@@ -56,29 +71,38 @@ class Auth
             return true;
         }
 
-        $authList = $this->getAuthList($uid, $type);
-        $names    = $this->normalizeNames($name);
-
+        $names = $this->normalizeNames($name);
         if ($names === []) {
             return false;
         }
 
-        $request = $mode === 'url' ? $this->lowercase((array) $this->app->request->param()) : [];
-        $passed  = [];
+        $authList = $this->getAuthList($uid, $type);
+        if ($authList === []) {
+            return false;
+        }
 
-        foreach ($authList as $auth) {
-            $query = (string) preg_replace('/^.+\?/U', '', $auth);
+        $request   = $mode === 'url' ? $this->lowercase((array) $this->app->request->get()) : [];
+        $authIndex = $this->getAuthIndex($uid, $type, $authList);
+        $passed    = [];
 
-            if ($mode === 'url' && $query !== $auth) {
-                parse_str($query, $param);
-                $intersect = array_intersect_assoc($request, $param);
-                $node      = (string) preg_replace('/\?.*$/U', '', $auth);
+        foreach ($names as $candidate) {
+            [$nameNode, $nameParam] = $this->splitRule($candidate);
 
-                if (in_array($node, $names, true) && $intersect == $param) {
-                    $passed[] = $node;
+            if (!isset($authIndex[$nameNode])) {
+                continue;
+            }
+
+            foreach ($authIndex[$nameNode] as $ruleParam) {
+                if ($nameParam !== [] && $nameParam !== $ruleParam) {
+                    continue;
                 }
-            } elseif (in_array($auth, $names, true)) {
-                $passed[] = $auth;
+
+                if ($ruleParam !== [] && $mode === 'url' && !$this->matchParams($request, $ruleParam)) {
+                    continue;
+                }
+
+                $passed[] = $candidate;
+                break;
             }
         }
 
@@ -106,13 +130,89 @@ class Auth
      */
     public function roles(int $uid, string $field = '')
     {
-        $query = RoleUser::where('user_id', $uid);
+        $roles = $this->getRoleRecords($uid);
 
         if ($field !== '') {
-            return $query->column($field);
+            return array_values(array_map(
+                static fn ($role) => $role[$field] ?? null,
+                $roles
+            ));
         }
 
-        return $query->select();
+        return $roles;
+    }
+
+    /**
+     * 判断是否拥有指定角色（ID 或角色名）
+     *
+     * @param int|string $role 角色 ID 或角色名称
+     */
+    public function hasRole(int $uid, int|string $role): bool
+    {
+        return $this->hasAnyRole($uid, [$role]);
+    }
+
+    /**
+     * 判断是否拥有角色列表中的任意一个
+     *
+     * @param array<int, int|string> $roles
+     */
+    public function hasAnyRole(int $uid, array $roles): bool
+    {
+        $owned = $this->getRoleIdentities($uid);
+
+        foreach ($roles as $role) {
+            if (in_array($role, $owned, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * 判断是否同时拥有角色列表中的全部角色
+     *
+     * @param array<int, int|string> $roles
+     */
+    public function hasAllRoles(int $uid, array $roles): bool
+    {
+        if ($roles === []) {
+            return false;
+        }
+
+        $owned = $this->getRoleIdentities($uid);
+
+        foreach ($roles as $role) {
+            if (!in_array($role, $owned, true)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * 用户角色的 ID 与名称集合，用于角色判断
+     *
+     * @return array<int, int|string>
+     */
+    protected function getRoleIdentities(int $uid): array
+    {
+        if (isset($this->roleCache[$uid]['identities'])) {
+            return $this->roleCache[$uid]['identities'];
+        }
+
+        $identities = [];
+
+        foreach ($this->getRoleRecords($uid) as $role) {
+            $identities[] = (int) $role['id'];
+            $identities[] = (string) $role['title'];
+        }
+
+        $this->roleCache[$uid]['identities'] = $identities;
+
+        return $identities;
     }
 
     /**
@@ -133,16 +233,13 @@ class Auth
             return $this->authListCache[$cacheKey] = (array) Session::get($sessionKey);
         }
 
-        $roleIds = (array) RoleUser::where('user_id', $uid)->column('role_id');
+        $roleIds = $this->getRoleIds($uid);
         if ($roleIds === []) {
             return $this->authListCache[$cacheKey] = [];
         }
 
-        $userModel = (new User())->useTable((string) $this->config['auth_user']);
-        $user      = $userModel->where($userModel->getPk(), $uid)->find();
-        $userData  = $user ? $user->toArray() : [];
-
         $authList = [];
+        $userData = null;
         $roleRules = RoleRule::whereIn('role_id', $roleIds)->with(['rule'])->select();
 
         foreach ($roleRules as $roleRule) {
@@ -158,9 +255,17 @@ class Auth
             }
 
             $condition = trim((string) $rule->condition);
-            if ($condition === '' || $this->evaluateCondition($condition, $userData)) {
-                $authList[] = $ruleName;
+            if ($condition !== '') {
+                if ($userData === null) {
+                    $userData = $this->getUserData($uid);
+                }
+
+                if (!$this->evaluateCondition($condition, $userData)) {
+                    continue;
+                }
             }
+
+            $authList[] = $ruleName;
         }
 
         $authList = array_values(array_unique($authList));
@@ -171,6 +276,140 @@ class Auth
         }
 
         return $authList;
+    }
+
+    /**
+     * 获取用户所属启用角色的 ID
+     *
+     * @return array<int, int>
+     */
+    protected function getRoleIds(int $uid): array
+    {
+        if (isset($this->roleCache[$uid]['ids'])) {
+            return $this->roleCache[$uid]['ids'];
+        }
+
+        $roleTable = (new Role())->getTable();
+        $roleIds   = array_values(array_map('intval', (array) RoleUser::alias('ru')
+            ->join($roleTable . ' r', 'r.id = ru.role_id')
+            ->where('ru.user_id', $uid)
+            ->where('r.status', 1)
+            ->column('ru.role_id')));
+
+        return $this->roleCache[$uid]['ids'] = $roleIds;
+    }
+
+    /**
+     * 用户所属启用角色的记录（请求内缓存）
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function getRoleRecords(int $uid): array
+    {
+        if (isset($this->roleCache[$uid]['records'])) {
+            return $this->roleCache[$uid]['records'];
+        }
+
+        $records = [];
+
+        foreach (Role::whereIn('id', $this->getRoleIds($uid))->select() as $role) {
+            $records[] = $role->toArray();
+        }
+
+        return $this->roleCache[$uid]['records'] = $records;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function getUserData(int $uid): array
+    {
+        $userModel = (new User())->useTable((string) $this->config['auth_user']);
+        $user      = $userModel->where($userModel->getPk(), $uid)->find();
+
+        return $user ? $user->toArray() : [];
+    }
+
+    /**
+     * 获取规则索引（请求内缓存），避免同一请求多次 check 重复拆分规则。
+     *
+     * @param array<int, string> $authList
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    protected function getAuthIndex(int $uid, int $type, array $authList): array
+    {
+        $cacheKey = $uid . ':' . implode(',', (array) $type);
+
+        if (isset($this->authIndexCache[$cacheKey])) {
+            return $this->authIndexCache[$cacheKey];
+        }
+
+        return $this->authIndexCache[$cacheKey] = $this->buildAuthIndex($authList);
+    }
+
+    /**
+     * 以规则节点为键建立索引，值为该节点下所有可能的参数组合。
+     *
+     * @param array<int, string> $authList
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    protected function buildAuthIndex(array $authList): array
+    {
+        $index = [];
+
+        foreach ($authList as $auth) {
+            [$node, $param] = $this->splitRule($auth);
+            $index[$node][] = $param;
+        }
+
+        return $index;
+    }
+
+    /**
+     * 拆分规则名为节点与查询参数
+     *
+     * @return array{0: string, 1: array<string, mixed>}
+     */
+    protected function splitRule(string $rule): array
+    {
+        $pos = strpos($rule, '?');
+
+        if ($pos === false) {
+            return [$rule, []];
+        }
+
+        parse_str(substr($rule, $pos + 1), $param);
+
+        return [substr($rule, 0, $pos), $this->lowercase($param)];
+    }
+
+    /**
+     * 请求参数是否覆盖规则要求的全部参数
+     */
+    protected function matchParams(array $request, array $param): bool
+    {
+        foreach ($param as $key => $value) {
+            if (!array_key_exists($key, $request) || (string) $request[$key] !== (string) $value) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * 清理指定用户的 Session 规则缓存
+     */
+    public function clearCache(int $uid, int $type = 1): void
+    {
+        $cacheKey   = $uid . ':' . implode(',', (array) $type);
+        $sessionKey = '_auth_list_' . $cacheKey;
+
+        unset($this->authListCache[$cacheKey], $this->authIndexCache[$cacheKey], $this->roleCache[$uid]);
+
+        if (Session::has($sessionKey)) {
+            Session::delete($sessionKey);
+        }
     }
 
     /**
@@ -219,14 +458,33 @@ class Auth
      */
     protected function evaluateCondition(string $condition, array $user): bool
     {
-        $orGroups = preg_split('/\s+or\s+/i', $condition) ?: [];
+        $condition = trim($condition);
 
-        foreach ($orGroups as $group) {
-            $andParts = preg_split('/\s+and\s+/i', trim($group)) ?: [];
+        if ($condition === '') {
+            return false;
+        }
+
+        // 整体被一对括号包裹时，去掉外层括号后递归解析
+        if ($this->isWrappedInParentheses($condition)) {
+            return $this->evaluateCondition(substr($condition, 1, -1), $user);
+        }
+
+        foreach ($this->splitCondition($condition, 'or') as $group) {
+            $group    = trim($group);
+            $andParts = $this->splitCondition($group, 'and');
             $matched  = $andParts !== [];
 
             foreach ($andParts as $part) {
-                if (!$this->evaluateExpression(trim($part), $user)) {
+                $part = trim($part);
+
+                // 单个 and 片段被括号包裹时递归解析
+                if ($this->isWrappedInParentheses($part)) {
+                    $ok = $this->evaluateCondition(substr($part, 1, -1), $user);
+                } else {
+                    $ok = $this->evaluateExpression($part, $user);
+                }
+
+                if (!$ok) {
                     $matched = false;
                     break;
                 }
@@ -241,12 +499,140 @@ class Auth
     }
 
     /**
+     * 判断字符串是否整体被一对括号包裹。
+     */
+    protected function isWrappedInParentheses(string $expr): bool
+    {
+        $length = strlen($expr);
+
+        if ($length < 2 || $expr[0] !== '(' || $expr[$length - 1] !== ')') {
+            return false;
+        }
+
+        $depth = 0;
+
+        for ($i = 0; $i < $length; $i++) {
+            if ($expr[$i] === '(') {
+                $depth++;
+            } elseif ($expr[$i] === ')') {
+                $depth--;
+
+                if ($depth === 0 && $i !== $length - 1) {
+                    return false;
+                }
+            }
+        }
+
+        return $depth === 0;
+    }
+
+    /**
+     * 按逻辑运算符拆分条件，忽略单双引号及括号内的 and / or。
+     *
+     * @return array<int, string>
+     */
+    protected function splitCondition(string $condition, string $logic): array
+    {
+        $parts  = [];
+        $buffer = '';
+        $length = strlen($condition);
+        $quote  = '';
+        $depth  = 0;
+        $size   = strlen($logic);
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = $condition[$i];
+
+            if ($quote !== '') {
+                $buffer .= $char;
+
+                if ($char === $quote && !$this->isEscaped($condition, $i)) {
+                    $quote = '';
+                }
+
+                continue;
+            }
+
+            if ($char === "'" || $char === '"') {
+                $quote  = $char;
+                $buffer .= $char;
+
+                continue;
+            }
+
+            if ($char === '(') {
+                $depth++;
+                $buffer .= $char;
+
+                continue;
+            }
+
+            if ($char === ')') {
+                $depth--;
+                $buffer .= $char;
+
+                continue;
+            }
+
+            if (
+                $depth === 0
+                && strcasecmp(substr($condition, $i, $size), $logic) === 0
+                && $this->isConditionBoundary($condition, $i - 1)
+                && $this->isConditionBoundary($condition, $i + $size)
+            ) {
+                $part = trim($buffer);
+                if ($part !== '') {
+                    $parts[] = $part;
+                }
+
+                $buffer = '';
+                $i     += $size - 1;
+
+                continue;
+            }
+
+            $buffer .= $char;
+        }
+
+        $part = trim($buffer);
+        if ($part !== '') {
+            $parts[] = $part;
+        }
+
+        return $parts;
+    }
+
+    /**
+     * 判断字符串指定位置的字符是否被奇数个反斜杠转义。
+     */
+    protected function isEscaped(string $value, int $index): bool
+    {
+        $slashes = 0;
+
+        for ($i = $index - 1; $i >= 0 && $value[$i] === '\\'; $i--) {
+            $slashes++;
+        }
+
+        return $slashes % 2 === 1;
+    }
+
+    /**
+     * 逻辑运算符两侧必须为字符串边界或空白字符。
+     */
+    protected function isConditionBoundary(string $condition, int $index): bool
+    {
+        return $index < 0 || $index >= strlen($condition) || ctype_space($condition[$index]);
+    }
+
+    /**
      * 解析单个比较表达式
      */
     protected function evaluateExpression(string $expression, array $user): bool
     {
         if (preg_match('/^\{(\w+)\}$/', $expression, $matches)) {
-            return !empty($user[$matches[1]] ?? null);
+            $value = $user[$matches[1]] ?? null;
+
+            return $value !== null && $value !== '';
         }
 
         if (!preg_match('/^\{(\w+)\}\s*(>=|<=|<>|!=|==|=|>|<)\s*(.+)$/', $expression, $matches)) {
@@ -272,11 +658,16 @@ class Auth
     protected function compare($left, string $operator, $right): bool
     {
         if (in_array($operator, ['=', '=='], true)) {
-            return $left == $right;
+            return $this->isEqual($left, $right);
         }
 
         if (in_array($operator, ['!=', '<>'], true)) {
-            return $left != $right;
+            return !$this->isEqual($left, $right);
+        }
+
+        // null 与布尔值不参与大小比较
+        if ($left === null || $right === null || is_bool($left) || is_bool($right)) {
+            return false;
         }
 
         if (is_numeric($left) && is_numeric($right)) {
@@ -294,6 +685,34 @@ class Auth
             '<='    => $left <= $right,
             default => false,
         };
+    }
+
+    /**
+     * 类型安全的相等判断，避免 PHP 松散比较的类型 juggling。
+     *
+     * - null 只与 null 相等
+     * - 布尔值只与布尔值相等
+     * - 数值与数值字符串按数值比较，兼顾数据库字段常为字符串的情况
+     * - 其余情况按字符串严格比较
+     *
+     * @param mixed $left
+     * @param mixed $right
+     */
+    protected function isEqual($left, $right): bool
+    {
+        if ($left === null || $right === null) {
+            return $left === null && $right === null;
+        }
+
+        if (is_bool($left) || is_bool($right)) {
+            return is_bool($left) && is_bool($right) && $left === $right;
+        }
+
+        if (is_numeric($left) && is_numeric($right)) {
+            return (float) $left === (float) $right;
+        }
+
+        return (string) $left === (string) $right;
     }
 
     /**

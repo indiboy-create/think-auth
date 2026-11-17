@@ -9,9 +9,13 @@ use youvision\auth\service\Auth as AuthService;
 /**
  * 权限认证静态入口
  *
- * @method static bool check(string|array $name, int $uid, int $type = 1, string $mode = 'url', string $relation = 'or')
+ * @method static bool  check(string|array $name, int $uid, int $type = 1, string $mode = 'url', string $relation = 'or')
  * @method static array rules(int $uid, int $type = 1)
  * @method static mixed roles(int $uid, string $field = '')
+ * @method static bool  hasRole(int $uid, int|string $role)
+ * @method static bool  hasAnyRole(int $uid, array $roles)
+ * @method static bool  hasAllRoles(int $uid, array $roles)
+ * @method static void  clearCache(int $uid, int $type = 1)
  *
  * @see \youvision\auth\service\Auth
  */

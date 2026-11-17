@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS `__PREFIX__auth_role_user` (
   `user_id` bigint unsigned NOT NULL COMMENT '用户ID',
   `role_id` int unsigned NOT NULL COMMENT '角色ID',
   UNIQUE KEY `user_role` (`user_id`, `role_id`),
-  KEY `role_id` (`role_id`)
+  KEY `role_id` (`role_id`),
+  CONSTRAINT `__PREFIX__fk_auth_role_user_role` FOREIGN KEY (`role_id`) REFERENCES `__PREFIX__auth_role` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户与角色关系表';
 
 -- 角色与规则关系表
@@ -31,5 +32,7 @@ CREATE TABLE IF NOT EXISTS `__PREFIX__auth_role_rule` (
   `rule_id` int unsigned NOT NULL COMMENT '规则ID',
   `role_id` int unsigned NOT NULL COMMENT '角色ID',
   PRIMARY KEY (`rule_id`, `role_id`),
-  KEY `role_id` (`role_id`)
+  KEY `role_id` (`role_id`),
+  CONSTRAINT `__PREFIX__fk_auth_role_rule_role` FOREIGN KEY (`role_id`) REFERENCES `__PREFIX__auth_role` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `__PREFIX__fk_auth_role_rule_rule` FOREIGN KEY (`rule_id`) REFERENCES `__PREFIX__auth_rule` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='角色与规则关系表';
